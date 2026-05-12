@@ -1,0 +1,7 @@
+venv/
+secrets/
+__pycache__/
+*.pyc
+chain_state.json
+*.kate-swp*
+*.swp

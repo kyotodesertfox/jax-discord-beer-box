@@ -1,0 +1,14 @@
+[Unit]
+OnFailure=jax-bot-notification.service
+
+[Service]
+User=zenko
+Group=zenko
+WorkingDirectory=/home/zenko/github/jax-ale-exchange/discord/beer-bot
+ExecStart=/bin/bash /home/zenko/github/jax-ale-exchange/discord/beer-bot/start.sh
+Restart=on-failure
+RestartSec=5
+Environment=PYTHONBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
