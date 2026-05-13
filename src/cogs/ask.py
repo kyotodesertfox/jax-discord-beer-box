@@ -175,6 +175,14 @@ class Ask(commands.Cog):
         )
         return response.content[0].text
 
+    async def _fetch_message_anywhere(self, guild: discord.Guild, message_id: int) -> discord.Message | None:
+        for channel in guild.text_channels:
+            try:
+                return await channel.fetch_message(message_id)
+            except (discord.NotFound, discord.Forbidden):
+                continue
+        return None
+
     def _dissent_on_cooldown(self, channel_id: int) -> bool:
         last = self._dissent_cooldowns.get(channel_id, 0)
         return (time.monotonic() - last) < DISSENT_COOLDOWN_SECONDS
@@ -220,11 +228,14 @@ class Ask(commands.Cog):
             raw_ids = [s.strip() for s in message_ids.split(",") if s.strip()]
             for raw_id in raw_ids:
                 try:
-                    msg = await interaction.channel.fetch_message(int(raw_id))
-                    fetched_messages.append(msg)
-                except (discord.NotFound, ValueError):
-                    await interaction.followup.send(f"❌ Message ID `{raw_id}` not found in this channel.", ephemeral=True)
+                    msg = await self._fetch_message_anywhere(interaction.guild, int(raw_id))
+                except ValueError:
+                    await interaction.followup.send(f"❌ `{raw_id}` is not a valid message ID.", ephemeral=True)
                     return
+                if not msg:
+                    await interaction.followup.send(f"❌ Message ID `{raw_id}` not found.", ephemeral=True)
+                    return
+                fetched_messages.append(msg)
 
         if fetched_messages:
             reply_target = fetched_messages[0]
@@ -259,10 +270,7 @@ class Ask(commands.Cog):
                 answer = answer[:1897] + "..."
             embed = discord.Embed(description=answer, color=0xF5A623)
 
-            if reply_target:
-                await reply_target.reply(embed=embed)
-            else:
-                await interaction.channel.send(embed=embed)
+            await interaction.channel.send(embed=embed)
 
             await interaction.followup.send("✅ Done.", ephemeral=True)
         except Exception as e:
