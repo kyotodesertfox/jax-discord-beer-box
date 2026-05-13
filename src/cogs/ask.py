@@ -279,7 +279,14 @@ class Ask(commands.Cog):
             if len(fetched_messages) == 1 and first_is_same_channel:
                 await fetched_messages[0].reply(embed=embed)
             else:
-                await interaction.channel.send(embed=embed)
+                if len(fetched_messages) == 1 and not first_is_same_channel:
+                    embed.add_field(name="", value=f"[↩ Jump to original]({fetched_messages[0].jump_url})", inline=False)
+                    await interaction.channel.send(
+                        content=fetched_messages[0].author.mention,
+                        embed=embed,
+                    )
+                else:
+                    await interaction.channel.send(embed=embed)
 
             await interaction.followup.send("✅ Done.", ephemeral=True)
         except Exception as e:
