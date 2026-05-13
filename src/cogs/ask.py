@@ -270,7 +270,14 @@ class Ask(commands.Cog):
                 answer = answer[:1897] + "..."
             embed = discord.Embed(description=answer, color=0xF5A623)
 
-            await interaction.channel.send(embed=embed)
+            single_same_channel = (
+                len(fetched_messages) == 1
+                and fetched_messages[0].channel.id == interaction.channel.id
+            )
+            if single_same_channel:
+                await fetched_messages[0].reply(embed=embed)
+            else:
+                await interaction.channel.send(embed=embed)
 
             await interaction.followup.send("✅ Done.", ephemeral=True)
         except Exception as e:
