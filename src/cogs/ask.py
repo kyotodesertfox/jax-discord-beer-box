@@ -220,55 +220,107 @@ class Ask(commands.Cog):
     async def respond(self, interaction: discord.Interaction, message_ids: str = None, context: str = None):
         await interaction.response.defer(ephemeral=True)
 
-        fetched_messages        = []
-        question_parts          = []
-        first_is_same_channel   = False
+        # list of (message, is_same_channel)
+        fetched: list[tuple[discord.Message, bool]] = []
 
         if message_ids:
-            raw_ids = [s.strip() for s in message_ids.split(",") if s.strip()]
-            for i, raw_id in enumerate(raw_ids):
+            for raw_id in [s.strip() for s in message_ids.split(",") if s.strip()]:
                 try:
                     mid = int(raw_id)
                 except ValueError:
                     await interaction.followup.send(f"❌ `{raw_id}` is not a valid message ID.", ephemeral=True)
                     return
-                # Try current channel first — reliable same-channel detection
                 try:
                     msg = await interaction.channel.fetch_message(mid)
-                    if i == 0:
-                        first_is_same_channel = True
+                    fetched.append((msg, True))
                 except discord.NotFound:
                     msg = await self._fetch_message_anywhere(interaction.guild, mid)
                     if not msg:
                         await interaction.followup.send(f"❌ Message ID `{raw_id}` not found.", ephemeral=True)
                         return
-                fetched_messages.append(msg)
+                    fetched.append((msg, False))
 
-        if fetched_messages:
-            if len(fetched_messages) == 1:
-                question_parts.append(
-                    f'A community member named "{reply_target.author.display_name}" posted the following:\n\n'
-                    f'"{reply_target.content}"\n\n'
-                    f"Respond to this directly and factually."
-                )
-            else:
-                thread_lines = "\n".join(
-                    f'  [{m.author.display_name}]: "{m.content}"'
-                    for m in fetched_messages
-                )
-                question_parts.append(
-                    f"Here is a thread of messages from the community:\n\n{thread_lines}\n\n"
-                    f"Read this exchange as a whole and respond with a single, factual, grounded reply."
-                )
+        msgs = [m for m, _ in fetched]
+
+        # Build Claude prompt
+        question_parts = []
+        if len(msgs) == 1:
+            question_parts.append(
+                f'A community member named "{msgs[0].author.display_name}" posted the following:\n\n'
+                f'"{msgs[0].content}"\n\n'
+                f"Respond to this directly and factually."
+            )
+        elif msgs:
+            thread_lines = "\n".join(f'  [{m.author.display_name}]: "{m.content}"' for m in msgs)
+            question_parts.append(
+                f"Here is a thread of messages from the community:\n\n{thread_lines}\n\n"
+                f"Read this exchange as a whole and respond with a single, factual, grounded reply."
+            )
 
         if context:
             question_parts.append(f"Additional context from the admin: {context}")
-
         if not question_parts:
             question_parts.append("Step in with a general reminder of what Jax Ale Exchange is and why it matters.")
 
-        question = "\n\n".join(question_parts)
-        blocks   = _build_system_blocks(DISSENT_MODIFIER)
+        try:
+            answer = await asyncio.to_thread(self._call_claude, _build_system_blocks(DISSENT_MODIFIER), "\n\n".join(question_parts))
+            if len(answer) > 1900:
+                answer = answer[:1897] + "..."
+            embed = discord.Embed(description=answer, color=0xF5A623)
+
+            # Unique author mentions across all messages
+            unique_authors = list({m.author.id: m.author for m in msgs}.values())
+            mentions = " ".join(a.mention for a in unique_authors) if unique_authors else None
+
+            # Jump links for any cross-channel messages
+            cross = [(m, s) for m, s in fetched if not s]
+            for msg, _ in cross:
+                embed.add_field(name="", value=f"[↩ {msg.author.display_name}'s message]({msg.jump_url})", inline=False)
+
+            all_same = all(s for _, s in fetched)
+            if msgs and all_same:
+                await msgs[0].reply(content=mentions, embed=embed)
+            else:
+                await interaction.channel.send(content=mentions, embed=embed)
+
+            await interaction.followup.send("✅ Done.", ephemeral=True)
+        except Exception as e:
+            await interaction.followup.send(f"Something went wrong: {e}", ephemeral=True)
+
+    # --- /respond_context command ---
+
+    @app_commands.command(name="respond_context", description="Respond to a specific message with admin-supplied context")
+    @app_commands.describe(
+        message_id="The message to respond to",
+        context="Context or framing for JaxBot to consider in the response",
+    )
+    @app_commands.default_permissions(administrator=True)
+    async def respond_context(self, interaction: discord.Interaction, message_id: str, context: str):
+        await interaction.response.defer(ephemeral=True)
+
+        try:
+            mid = int(message_id)
+        except ValueError:
+            await interaction.followup.send("❌ Not a valid message ID.", ephemeral=True)
+            return
+
+        same_channel = True
+        try:
+            msg = await interaction.channel.fetch_message(mid)
+        except discord.NotFound:
+            same_channel = False
+            msg = await self._fetch_message_anywhere(interaction.guild, mid)
+            if not msg:
+                await interaction.followup.send("❌ Message not found.", ephemeral=True)
+                return
+
+        question = (
+            f'A community member named "{msg.author.display_name}" posted the following:\n\n'
+            f'"{msg.content}"\n\n'
+            f"Admin context to consider: {context}\n\n"
+            f"Respond directly and factually, incorporating the above context."
+        )
+        blocks = _build_system_blocks(DISSENT_MODIFIER)
 
         try:
             answer = await asyncio.to_thread(self._call_claude, blocks, question)
@@ -276,17 +328,11 @@ class Ask(commands.Cog):
                 answer = answer[:1897] + "..."
             embed = discord.Embed(description=answer, color=0xF5A623)
 
-            if len(fetched_messages) == 1 and first_is_same_channel:
-                await fetched_messages[0].reply(content=fetched_messages[0].author.mention, embed=embed)
+            if same_channel:
+                await msg.reply(content=msg.author.mention, embed=embed)
             else:
-                if len(fetched_messages) == 1 and not first_is_same_channel:
-                    embed.add_field(name="", value=f"[↩ Jump to original]({fetched_messages[0].jump_url})", inline=False)
-                    await interaction.channel.send(
-                        content=fetched_messages[0].author.mention,
-                        embed=embed,
-                    )
-                else:
-                    await interaction.channel.send(embed=embed)
+                embed.add_field(name="", value=f"[↩ Jump to original]({msg.jump_url})", inline=False)
+                await interaction.channel.send(content=msg.author.mention, embed=embed)
 
             await interaction.followup.send("✅ Done.", ephemeral=True)
         except Exception as e:
