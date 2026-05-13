@@ -338,6 +338,63 @@ class Ask(commands.Cog):
         except Exception as e:
             await interaction.followup.send(f"Something went wrong: {e}", ephemeral=True)
 
+    # --- /respond_mention command ---
+
+    @app_commands.command(name="respond_mention", description="Respond with context and explicitly tag a user")
+    @app_commands.describe(
+        message_id="Message to use as context",
+        user="User to tag in the response",
+        context="Framing for JaxBot to consider",
+    )
+    @app_commands.default_permissions(administrator=True)
+    async def respond_mention(self, interaction: discord.Interaction, message_id: str, user: discord.Member, context: str):
+        await interaction.response.defer(ephemeral=True)
+
+        try:
+            mid = int(message_id)
+        except ValueError:
+            await interaction.followup.send("❌ Not a valid message ID.", ephemeral=True)
+            return
+
+        same_channel = True
+        try:
+            msg = await interaction.channel.fetch_message(mid)
+        except discord.NotFound:
+            same_channel = False
+            msg = await self._fetch_message_anywhere(interaction.guild, mid)
+            if not msg:
+                await interaction.followup.send("❌ Message not found.", ephemeral=True)
+                return
+
+        question = (
+            f'A community member named "{msg.author.display_name}" posted the following:\n\n'
+            f'"{msg.content}"\n\n'
+            f"Admin context to consider: {context}\n\n"
+            f"Address your response to {user.display_name} directly."
+        )
+        blocks = _build_system_blocks(DISSENT_MODIFIER)
+
+        try:
+            answer = await asyncio.to_thread(self._call_claude, blocks, question)
+            if len(answer) > 1900:
+                answer = answer[:1897] + "..."
+            embed = discord.Embed(description=answer, color=0xF5A623)
+
+            # Always mention the explicitly tagged user; also mention message author if different
+            mentions = user.mention
+            if msg.author.id != user.id:
+                mentions = f"{msg.author.mention} {user.mention}"
+
+            if same_channel:
+                await msg.reply(content=mentions, embed=embed)
+            else:
+                embed.add_field(name="", value=f"[↩ Jump to original]({msg.jump_url})", inline=False)
+                await interaction.channel.send(content=mentions, embed=embed)
+
+            await interaction.followup.send("✅ Done.", ephemeral=True)
+        except Exception as e:
+            await interaction.followup.send(f"Something went wrong: {e}", ephemeral=True)
+
     # --- Passive listener ---
 
     @commands.Cog.listener()
