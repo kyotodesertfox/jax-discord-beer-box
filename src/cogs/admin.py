@@ -1,11 +1,6 @@
 import discord
 from discord import app_commands
 from discord.ext import commands
-import json
-import io
-from pathlib import Path
-
-POINTS_DB_FILE = Path(__file__).resolve().parents[2] / 'secrets' / 'points_db.json'
 
 
 def is_owner():
@@ -81,32 +76,6 @@ class Admin(commands.Cog):
         roles = [r.name for r in member.roles if r.name != "@everyone"]
         embed.add_field(name=f"Roles ({len(roles)})", value=", ".join(roles) or "None", inline=False)
         await interaction.response.send_message(embed=embed, ephemeral=True)
-
-    @app_commands.command(name="export_points", description="Download a points audit report")
-    @app_commands.default_permissions(administrator=True)
-    @is_owner()
-    async def export_points(self, interaction: discord.Interaction):
-        await interaction.response.send_message("🔄 Generating...", ephemeral=True)
-        if not POINTS_DB_FILE.exists():
-            await interaction.followup.send("❌ No points database found.", ephemeral=True)
-            return
-
-        with open(POINTS_DB_FILE, 'r') as f:
-            data = json.load(f)
-
-        buf = io.StringIO()
-        buf.write(f"{'USERNAME':<30} | {'POINTS':<10} | {'ID':<20}\n")
-        buf.write("-" * 65 + "\n")
-        for uid_str, points in data.items():
-            try:
-                member = interaction.guild.get_member(int(uid_str))
-                name = member.display_name if member else "UNKNOWN (Left Server)"
-            except:
-                name = "INVALID ID"
-            buf.write(f"{name:<30} | {points:<10} | {uid_str:<20}\n")
-
-        buf.seek(0)
-        await interaction.followup.send("✅ Report:", file=discord.File(buf, filename="points_audit.txt"), ephemeral=True)
 
     @app_commands.command(name="say", description="Make the bot say something")
     @app_commands.describe(message="Text to send")

@@ -20,20 +20,8 @@ ROLE_IDS = {
     "homebrewer":    1443976209380937748,
     "homebrewfinds": 1444036391984955403,
     "beta-tester":   1491536075603316766,
-    "bronze":        1444812399822503966,
-    "silver":        1444812302447673414,
-    "gold":          1444812216053403688,
     "best-friend":   1504239291704807486,
 }
-
-# --- POINT RANKS ---
-POINT_RANKS = {
-    "Bronze": {"points": 100,  "role_key": "bronze"},
-    "Silver": {"points": 500,  "role_key": "silver"},
-    "Gold":   {"points": 1000, "role_key": "gold"},
-}
-
-POINTS_ACCESS_ROLE_ID = ROLE_IDS["homebrewer"]
 
 # --- ROLE BUTTON MENUS ---
 BUTTON_MENUS = {
