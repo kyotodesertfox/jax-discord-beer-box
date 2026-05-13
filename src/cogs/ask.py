@@ -220,25 +220,31 @@ class Ask(commands.Cog):
     async def respond(self, interaction: discord.Interaction, message_ids: str = None, context: str = None):
         await interaction.response.defer(ephemeral=True)
 
-        fetched_messages = []
-        question_parts   = []
-        reply_target     = None  # bot replies to the first message in the list
+        fetched_messages        = []
+        question_parts          = []
+        first_is_same_channel   = False
 
         if message_ids:
             raw_ids = [s.strip() for s in message_ids.split(",") if s.strip()]
-            for raw_id in raw_ids:
+            for i, raw_id in enumerate(raw_ids):
                 try:
-                    msg = await self._fetch_message_anywhere(interaction.guild, int(raw_id))
+                    mid = int(raw_id)
                 except ValueError:
                     await interaction.followup.send(f"❌ `{raw_id}` is not a valid message ID.", ephemeral=True)
                     return
-                if not msg:
-                    await interaction.followup.send(f"❌ Message ID `{raw_id}` not found.", ephemeral=True)
-                    return
+                # Try current channel first — reliable same-channel detection
+                try:
+                    msg = await interaction.channel.fetch_message(mid)
+                    if i == 0:
+                        first_is_same_channel = True
+                except discord.NotFound:
+                    msg = await self._fetch_message_anywhere(interaction.guild, mid)
+                    if not msg:
+                        await interaction.followup.send(f"❌ Message ID `{raw_id}` not found.", ephemeral=True)
+                        return
                 fetched_messages.append(msg)
 
         if fetched_messages:
-            reply_target = fetched_messages[0]
             if len(fetched_messages) == 1:
                 question_parts.append(
                     f'A community member named "{reply_target.author.display_name}" posted the following:\n\n'
@@ -270,11 +276,7 @@ class Ask(commands.Cog):
                 answer = answer[:1897] + "..."
             embed = discord.Embed(description=answer, color=0xF5A623)
 
-            single_same_channel = (
-                len(fetched_messages) == 1
-                and fetched_messages[0].channel.id == interaction.channel.id
-            )
-            if single_same_channel:
+            if len(fetched_messages) == 1 and first_is_same_channel:
                 await fetched_messages[0].reply(embed=embed)
             else:
                 await interaction.channel.send(embed=embed)
