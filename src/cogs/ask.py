@@ -203,29 +203,46 @@ class Ask(commands.Cog):
 
     # --- /respond admin command ---
 
-    @app_commands.command(name="respond", description="Manually trigger a JaxBot response, optionally aimed at a specific message")
+    @app_commands.command(name="respond", description="Manually trigger a JaxBot response, optionally aimed at one or more messages")
     @app_commands.describe(
-        message_id="ID of the message to read and respond to (optional)",
+        message_ids="One or more message IDs to read as context, comma-separated (optional)",
         context="Additional context or instruction for JaxBot (optional)",
     )
     @app_commands.default_permissions(administrator=True)
-    async def respond(self, interaction: discord.Interaction, message_id: str = None, context: str = None):
+    async def respond(self, interaction: discord.Interaction, message_ids: str = None, context: str = None):
         await interaction.response.defer(ephemeral=True)
 
-        target_message = None
-        question_parts = []
+        fetched_messages = []
+        question_parts   = []
+        reply_target     = None  # bot replies to the first message in the list
 
-        if message_id:
-            try:
-                target_message = await interaction.channel.fetch_message(int(message_id))
+        if message_ids:
+            raw_ids = [s.strip() for s in message_ids.split(",") if s.strip()]
+            for raw_id in raw_ids:
+                try:
+                    msg = await interaction.channel.fetch_message(int(raw_id))
+                    fetched_messages.append(msg)
+                except (discord.NotFound, ValueError):
+                    await interaction.followup.send(f"❌ Message ID `{raw_id}` not found in this channel.", ephemeral=True)
+                    return
+
+        if fetched_messages:
+            reply_target = fetched_messages[0]
+            if len(fetched_messages) == 1:
                 question_parts.append(
-                    f'A community member named "{target_message.author.display_name}" posted the following:\n\n'
-                    f'"{target_message.content}"\n\n'
+                    f'A community member named "{reply_target.author.display_name}" posted the following:\n\n'
+                    f'"{reply_target.content}"\n\n'
                     f"Respond to this directly and factually."
                 )
-            except (discord.NotFound, ValueError):
-                await interaction.followup.send("❌ Message ID not found in this channel.", ephemeral=True)
-                return
+            else:
+                thread_lines = "\n".join(
+                    f'  [{m.author.display_name}]: "{m.content}"'
+                    for m in fetched_messages
+                )
+                question_parts.append(
+                    f"Here is a thread of messages from the community:\n\n{thread_lines}\n\n"
+                    f"Read this exchange as a whole and respond with a single, factual, grounded reply."
+                )
 
         if context:
             question_parts.append(f"Additional context from the admin: {context}")
@@ -242,8 +259,8 @@ class Ask(commands.Cog):
                 answer = answer[:1897] + "..."
             embed = discord.Embed(description=answer, color=0xF5A623)
 
-            if target_message:
-                await target_message.reply(embed=embed)
+            if reply_target:
+                await reply_target.reply(embed=embed)
             else:
                 await interaction.channel.send(embed=embed)
 
