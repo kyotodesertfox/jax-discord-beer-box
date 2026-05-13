@@ -277,7 +277,7 @@ class Ask(commands.Cog):
             embed = discord.Embed(description=answer, color=0xF5A623)
 
             if len(fetched_messages) == 1 and first_is_same_channel:
-                await fetched_messages[0].reply(embed=embed)
+                await fetched_messages[0].reply(content=fetched_messages[0].author.mention, embed=embed)
             else:
                 if len(fetched_messages) == 1 and not first_is_same_channel:
                     embed.add_field(name="", value=f"[↩ Jump to original]({fetched_messages[0].jump_url})", inline=False)
