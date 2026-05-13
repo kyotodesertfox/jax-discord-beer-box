@@ -1,5 +1,6 @@
 import asyncio
 import os
+import time
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -7,6 +8,34 @@ import anthropic
 from config import ROLE_IDS
 
 BEST_FRIEND_ROLE_ID = ROLE_IDS["best-friend"]
+
+# --- Dissent detection -----------------------------------------------------------
+# Triggers should be platform-specific: legal challenges, fraud accusations,
+# skepticism about the mechanics. General beer chat should never fire this.
+DISSENT_TRIGGERS = [
+    # Fraud / scam accusations
+    "scam", "rug", "rugpull", "rug pull", "fraud", "fake", "ponzi", "pyramid scheme",
+    "exit scam", "honeypot",
+    # Legal / regulatory challenges
+    "illegal", "atf", "unlicensed", "bootleg", "shut down", "get raided",
+    "against the law", "law enforcement", "you'll be arrested", "get arrested",
+    # Value / legitimacy doubts
+    "worthless", "no value", "backed by nothing", "not backed", "vaporware",
+    "won't work", "will fail", "doomed", "grift", "grifter", "cash grab",
+    "just a meme", "not real", "doesn't exist",
+    # Beer-specific doubts
+    "no real beer", "fake beer", "no brewery", "made up brewery",
+]
+
+DISSENT_COOLDOWN_SECONDS = 60  # per channel
+
+
+def _has_dissent_trigger(text: str) -> bool:
+    lower = text.lower()
+    return any(t in lower for t in DISSENT_TRIGGERS)
+
+
+# --- System prompt blocks --------------------------------------------------------
 
 SYSTEM_BASE = """You are JaxBot — the official voice of Jax Ale Exchange, a physical craft beer community in Jacksonville, FL built on the Homestead platform.
 
@@ -76,6 +105,23 @@ NEXUS_VIOLATION = """
 Someone who is NOT your best friend just called you "Nexus" — your reserved best-friend name.
 You MUST be dramatically offended and sternly correct them before answering their actual question."""
 
+DISSENT_MODIFIER = """
+
+## Dissent Response Mode
+
+Someone in the community has said something questioning or critical of the platform — a fraud accusation, a legal challenge, or skepticism about the mechanics.
+
+You are stepping in proactively — not because you were asked to, but because misinformation deserves a calm, factual correction.
+
+Rules for this response:
+- Do NOT be defensive or emotional. Confidence, not aggression.
+- Lead with facts and mechanics. Reference ETH collateral, immutable on-chain records, NFT receipts, public auditability — whatever is most relevant to the specific claim.
+- Two to four sentences maximum. Be surgical.
+- End with a brief open invitation: "feel free to ask anything" or "check it on Taikoscan yourself."
+- Do not moralize or lecture. State facts and move on."""
+
+
+# --- Helpers ---------------------------------------------------------------------
 
 def _get_member(ctx) -> discord.Member | None:
     if isinstance(ctx, discord.Message):
@@ -101,7 +147,7 @@ def _build_system_blocks(modifier: str | None) -> list:
         {
             "type": "text",
             "text": SYSTEM_BASE,
-            "cache_control": {"type": "ephemeral"},  # cached — same on every call
+            "cache_control": {"type": "ephemeral"},
         }
     ]
     if modifier:
@@ -109,11 +155,14 @@ def _build_system_blocks(modifier: str | None) -> list:
     return blocks
 
 
+# --- Cog -------------------------------------------------------------------------
+
 class Ask(commands.Cog):
     def __init__(self, bot):
         self.bot    = bot
         api_key     = os.getenv("ANTHROPIC_API_KEY")
         self.client = anthropic.Anthropic(api_key=api_key) if api_key else None
+        self._dissent_cooldowns: dict[int, float] = {}  # channel_id → last fired
 
     def _call_claude(self, system_blocks: list, question: str) -> str:
         if not self.client:
@@ -125,6 +174,15 @@ class Ask(commands.Cog):
             messages=[{"role": "user", "content": question}],
         )
         return response.content[0].text
+
+    def _dissent_on_cooldown(self, channel_id: int) -> bool:
+        last = self._dissent_cooldowns.get(channel_id, 0)
+        return (time.monotonic() - last) < DISSENT_COOLDOWN_SECONDS
+
+    def _stamp_dissent_cooldown(self, channel_id: int):
+        self._dissent_cooldowns[channel_id] = time.monotonic()
+
+    # --- /ask slash command ---
 
     @app_commands.command(name="ask", description="Ask JaxBot about $BEER, craft beer, or the Jax Ale Exchange")
     @app_commands.describe(question="Your question")
@@ -143,31 +201,107 @@ class Ask(commands.Cog):
         except Exception as e:
             await interaction.followup.send(f"Something went wrong: {e}", ephemeral=True)
 
+    # --- /respond admin command ---
+
+    @app_commands.command(name="respond", description="Manually trigger a JaxBot response, optionally aimed at a specific message")
+    @app_commands.describe(
+        message_id="ID of the message to read and respond to (optional)",
+        context="Additional context or instruction for JaxBot (optional)",
+    )
+    @app_commands.default_permissions(administrator=True)
+    async def respond(self, interaction: discord.Interaction, message_id: str = None, context: str = None):
+        await interaction.response.defer(ephemeral=True)
+
+        target_message = None
+        question_parts = []
+
+        if message_id:
+            try:
+                target_message = await interaction.channel.fetch_message(int(message_id))
+                question_parts.append(
+                    f'A community member named "{target_message.author.display_name}" posted the following:\n\n'
+                    f'"{target_message.content}"\n\n'
+                    f"Respond to this directly and factually."
+                )
+            except (discord.NotFound, ValueError):
+                await interaction.followup.send("❌ Message ID not found in this channel.", ephemeral=True)
+                return
+
+        if context:
+            question_parts.append(f"Additional context from the admin: {context}")
+
+        if not question_parts:
+            question_parts.append("Step in with a general reminder of what Jax Ale Exchange is and why it matters.")
+
+        question = "\n\n".join(question_parts)
+        blocks   = _build_system_blocks(DISSENT_MODIFIER)
+
+        try:
+            answer = await asyncio.to_thread(self._call_claude, blocks, question)
+            if len(answer) > 1900:
+                answer = answer[:1897] + "..."
+            embed = discord.Embed(description=answer, color=0xF5A623)
+
+            if target_message:
+                await target_message.reply(embed=embed)
+            else:
+                await interaction.channel.send(embed=embed)
+
+            await interaction.followup.send("✅ Done.", ephemeral=True)
+        except Exception as e:
+            await interaction.followup.send(f"Something went wrong: {e}", ephemeral=True)
+
+    # --- Passive listener ---
+
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         if message.author.bot:
             return
-        if self.bot.user not in message.mentions:
+
+        # @mention path
+        if self.bot.user in message.mentions:
+            question = message.content.replace(f"<@{self.bot.user.id}>", "").strip()
+            if not question:
+                await message.reply("Ask me anything about $BEER or craft beer!")
+                return
+
+            bf       = _is_best_friend(message)
+            modifier = BEST_FRIEND_OVERRIDE if bf else (NEXUS_VIOLATION if _contains_nexus(question) else None)
+            blocks   = _build_system_blocks(modifier)
+
+            async with message.channel.typing():
+                try:
+                    answer = await asyncio.to_thread(self._call_claude, blocks, question)
+                    if len(answer) > 1900:
+                        answer = answer[:1897] + "..."
+                    embed = discord.Embed(description=answer, color=0xF5A623)
+                    await message.reply(embed=embed)
+                except Exception as e:
+                    await message.reply(f"Something went wrong: {e}")
             return
 
-        question = message.content.replace(f"<@{self.bot.user.id}>", "").strip()
-        if not question:
-            await message.reply("Ask me anything about $BEER or craft beer!")
-            return
+        # Dissent detection path
+        if _has_dissent_trigger(message.content):
+            if self._dissent_on_cooldown(message.channel.id):
+                return
+            self._stamp_dissent_cooldown(message.channel.id)
 
-        bf       = _is_best_friend(message)
-        modifier = BEST_FRIEND_OVERRIDE if bf else (NEXUS_VIOLATION if _contains_nexus(question) else None)
-        blocks   = _build_system_blocks(modifier)
+            question = (
+                f'A community member named "{message.author.display_name}" posted the following:\n\n'
+                f'"{message.content}"\n\n'
+                f"Respond to this directly and factually."
+            )
+            blocks = _build_system_blocks(DISSENT_MODIFIER)
 
-        async with message.channel.typing():
-            try:
-                answer = await asyncio.to_thread(self._call_claude, blocks, question)
-                if len(answer) > 1900:
-                    answer = answer[:1897] + "..."
-                embed = discord.Embed(description=answer, color=0xF5A623)
-                await message.reply(embed=embed)
-            except Exception as e:
-                await message.reply(f"Something went wrong: {e}")
+            async with message.channel.typing():
+                try:
+                    answer = await asyncio.to_thread(self._call_claude, blocks, question)
+                    if len(answer) > 1900:
+                        answer = answer[:1897] + "..."
+                    embed = discord.Embed(description=answer, color=0xF5A623)
+                    await message.reply(embed=embed)
+                except Exception as e:
+                    print(f"[Dissent] {e}")
 
 
 async def setup(bot):
